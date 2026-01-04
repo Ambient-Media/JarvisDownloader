@@ -48,6 +48,7 @@ struct ContentView: View {
             downloadManager.items.append(item)
         }
         
+        downloadManager.saveQueueToDefaults()
         urlInput = ""
     }
     
@@ -198,6 +199,36 @@ struct DownloadListSection: View {
     let onRemove: (UUID) -> Void
     let onDelete: (UUID) -> Void
     
+    @State private var sortOption: SortOption = .dateAdded
+    
+    enum SortOption: String, CaseIterable {
+        case dateAdded = "Date Added"
+        case name = "Name"
+        case status = "Status"
+        case source = "Source"
+    }
+    
+    var sortedItems: [DownloadItem] {
+        let sorted: [DownloadItem]
+        
+        switch sortOption {
+        case .dateAdded:
+            sorted = items.reversed() // Newest first
+        case .name:
+            sorted = items.sorted { (item1, item2) in
+                let name1 = item1.fileName ?? item1.url.absoluteString
+                let name2 = item2.fileName ?? item2.url.absoluteString
+                return name1.localizedCaseInsensitiveCompare(name2) == .orderedAscending
+            }
+        case .status:
+            sorted = items.sorted { $0.status.rawValue < $1.status.rawValue }
+        case .source:
+            sorted = items.sorted { $0.source.rawValue < $1.source.rawValue }
+        }
+        
+        return sorted
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
@@ -209,6 +240,32 @@ struct DownloadListSection: View {
                     .font(.system(size: 16, weight: .semibold))
                 
                 Spacer()
+                
+                Menu {
+                    ForEach(SortOption.allCases, id: \.self) { option in
+                        Button(action: { sortOption = option }) {
+                            HStack {
+                                Text(option.rawValue)
+                                if sortOption == option {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 11))
+                        Text(sortOption.rawValue)
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(6)
+                }
+                .menuStyle(.borderlessButton)
                 
                 Text("\(items.count) items")
                     .font(.system(size: 12, weight: .medium))
@@ -223,7 +280,7 @@ struct DownloadListSection: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
-                        ForEach(items) { item in
+                        ForEach(sortedItems) { item in
                             DownloadItemCard(
                                 item: item,
                                 onRemove: { onRemove(item.id) },

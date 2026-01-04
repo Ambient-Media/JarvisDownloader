@@ -17,6 +17,7 @@ final class DownloadManager: ObservableObject {
     }
     
     private let historyKey = "jarvisDownloadHistory"
+    private let queueKey = "jarvisDownloadQueue"
     
     init() {
         if let savedPath = UserDefaults.standard.string(forKey: "jarvisRootFolder"),
@@ -34,6 +35,7 @@ final class DownloadManager: ObservableObject {
         )
         
         loadHistory()
+        loadQueue()
     }
     
     func startDownload() async {
@@ -89,7 +91,9 @@ final class DownloadManager: ObservableObject {
             "-x", "--audio-format", "mp3",
             "--embed-thumbnail",
             "-o", "\(folder.path)/%(artist,uploader)s - %(title)s.%(ext)s",
-            "--print", "after_move:filepath"
+            "--print", "after_move:filepath",
+            "--newline",
+            "--progress"
         ]
         
         switch item.source {
@@ -107,56 +111,109 @@ final class DownloadManager: ObservableObject {
     }
     
     private func runYtDlp(for item: DownloadItem, in folder: URL) async -> (Bool, String?, Bool) {
-        let process = Process()
-        process.launchPath = "/opt/homebrew/bin/yt-dlp"
-        process.arguments = ytDlpArguments(for: item, in: folder)
-        
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        
-        do {
-            try process.run()
-        } catch {
-            print("❌ Failed to launch yt-dlp: \(error.localizedDescription)")
-            updateItem(item.id) { $0.errorMessage = error.localizedDescription }
-            return (false, nil, false)
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.launchPath = "/opt/homebrew/bin/yt-dlp"
+                process.arguments = self.ytDlpArguments(for: item, in: folder)
+                
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
+                process.standardOutput = outputPipe
+                process.standardError = errorPipe
+                
+                var outputData = Data()
+                
+                // Read output in real-time for progress updates
+                let outputHandle = outputPipe.fileHandleForReading
+                
+                outputHandle.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.count > 0 {
+                        outputData.append(data)
+                        
+                        if let line = String(data: data, encoding: .utf8) {
+                            // Parse progress from yt-dlp output
+                            // Format: [download]  45.2% of 5.23MiB at 1.23MiB/s ETA 00:03
+                            if line.contains("[download]") && line.contains("%") {
+                                let components = line.components(separatedBy: " ")
+                                for component in components {
+                                    if component.hasSuffix("%") {
+                                        if let percentStr = component.dropLast().split(separator: ".").first,
+                                           let percent = Double(percentStr) {
+                                            DispatchQueue.main.async {
+                                                if let idx = self.items.firstIndex(where: { $0.id == item.id }) {
+                                                    self.items[idx].progress = percent / 100.0
+                                                }
+                                            }
+                                        }
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                do {
+                    try process.run()
+                } catch {
+                    print("❌ Failed to launch yt-dlp: \(error.localizedDescription)")
+                    DispatchQueue.main.async {
+                        if let idx = self.items.firstIndex(where: { $0.id == item.id }) {
+                            self.items[idx].errorMessage = error.localizedDescription
+                        }
+                    }
+                    outputHandle.readabilityHandler = nil
+                    continuation.resume(returning: (false, nil, false))
+                    return
+                }
+                
+                process.waitUntilExit()
+                outputHandle.readabilityHandler = nil
+                
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let outputString = String(data: outputData, encoding: .utf8) ?? ""
+                let errorString = String(data: errorData, encoding: .utf8) ?? ""
+                
+                let isDuplicate = false
+                let isSuccess = process.terminationStatus == 0
+                
+                if !isSuccess {
+                    print("❌ yt-dlp error: \(errorString)")
+                    DispatchQueue.main.async {
+                        if let idx = self.items.firstIndex(where: { $0.id == item.id }) {
+                            self.items[idx].errorMessage = errorString
+                        }
+                    }
+                    continuation.resume(returning: (false, nil, false))
+                    return
+                }
+                
+                let filePath = outputString.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").last
+                
+                // Extract filename from path
+                if let path = filePath, !path.isEmpty {
+                    let url = URL(fileURLWithPath: path)
+                    let filename = url.deletingPathExtension().lastPathComponent
+                    DispatchQueue.main.async {
+                        if let idx = self.items.firstIndex(where: { $0.id == item.id }) {
+                            self.items[idx].fileName = filename
+                            self.items[idx].progress = 1.0
+                        }
+                    }
+                }
+                
+                continuation.resume(returning: (true, filePath, isDuplicate))
+            }
         }
-        
-        process.waitUntilExit()
-        
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        
-        let outputString = String(data: outputData, encoding: .utf8) ?? ""
-        let errorString = String(data: errorData, encoding: .utf8) ?? ""
-        
-        let isDuplicate = false
-        let isSuccess = process.terminationStatus == 0
-        
-        if !isSuccess {
-            print("❌ yt-dlp error: \(errorString)")
-            updateItem(item.id) { $0.errorMessage = errorString }
-            return (false, nil, false)
-        }
-        
-        let filePath = outputString.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").last
-        
-        // Extract filename from path
-        if let path = filePath, !path.isEmpty {
-            let url = URL(fileURLWithPath: path)
-            let filename = url.deletingPathExtension().lastPathComponent
-            updateItem(item.id) { $0.fileName = filename }
-        }
-        
-        return (true, filePath, isDuplicate)
     }
     
     private func updateItem(_ id: UUID, _ update: @escaping (inout DownloadItem) -> Void) {
         DispatchQueue.main.async {
             if let idx = self.items.firstIndex(where: { $0.id == id }) {
                 update(&self.items[idx])
+                self.saveQueue()
             }
         }
     }
@@ -181,10 +238,29 @@ final class DownloadManager: ObservableObject {
         }
     }
     
+    private func loadQueue() {
+        if let data = UserDefaults.standard.data(forKey: queueKey),
+           let decoded = try? JSONDecoder().decode([DownloadItem].self, from: data) {
+            self.items = decoded
+        }
+    }
+    
+    private func saveQueue() {
+        if let encoded = try? JSONEncoder().encode(items) {
+            UserDefaults.standard.set(encoded, forKey: queueKey)
+        }
+    }
+    
+    // Public method to save queue from outside
+    func saveQueueToDefaults() {
+        saveQueue()
+    }
+    
     // Remove item from list only
     func removeItem(id: UUID) {
         DispatchQueue.main.async {
             self.items.removeAll { $0.id == id }
+            self.saveQueue()
         }
     }
     
