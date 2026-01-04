@@ -48,7 +48,10 @@ final class DownloadManager: ObservableObject {
     
     private func processQueue() async {
         for item in items {
-            if item.status == .completed || item.status == .skipped { continue }
+            // Skip items that are already done
+            if item.status == .completed || item.status == .skipped || item.status == .failed {
+                continue
+            }
             
             updateItem(item.id) { $0.status = .running }
             
@@ -63,11 +66,15 @@ final class DownloadManager: ObservableObject {
                     $0.status = .failed
                 }
                 $0.filePath = filePath
+                $0.completedDate = Date()
             }
             
-            if success && !isDuplicate, let idx = items.firstIndex(where: { $0.id == item.id }) {
-                let completedItem = items[idx]
-                addToHistory(completedItem)
+            // Add to history for record keeping
+            if success || isDuplicate {
+                if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                    let completedItem = items[idx]
+                    addToHistory(completedItem)
+                }
             }
         }
         
@@ -156,9 +163,7 @@ final class DownloadManager: ObservableObject {
     
     private func addToHistory(_ item: DownloadItem) {
         DispatchQueue.main.async {
-            var updatedItem = item
-            updatedItem.completedDate = Date()
-            self.history.append(updatedItem)
+            self.history.append(item)
             self.saveHistory()
         }
     }
@@ -174,5 +179,30 @@ final class DownloadManager: ObservableObject {
         if let encoded = try? JSONEncoder().encode(history) {
             UserDefaults.standard.set(encoded, forKey: historyKey)
         }
+    }
+    
+    // Remove item from list only
+    func removeItem(id: UUID) {
+        DispatchQueue.main.async {
+            self.items.removeAll { $0.id == id }
+        }
+    }
+    
+    // Delete file from disk and remove from list
+    func deleteItem(id: UUID) {
+        if let item = items.first(where: { $0.id == id }),
+           let filePath = item.filePath {
+            let fileURL = URL(fileURLWithPath: filePath)
+            
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+                print("✅ Deleted file: \(filePath)")
+            } catch {
+                print("❌ Failed to delete file: \(error.localizedDescription)")
+            }
+        }
+        
+        // Remove from list regardless of whether file deletion succeeded
+        removeItem(id: id)
     }
 }

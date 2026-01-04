@@ -24,8 +24,12 @@ struct ContentView: View {
                 
                 Divider()
                 
-                // Right side: Combined queue and history
-                DownloadListSection(items: downloadManager.items, history: downloadManager.history)
+                // Right side: Just show queue items
+                DownloadListSection(
+                    items: downloadManager.items,
+                    onRemove: removeItem,
+                    onDelete: deleteItem
+                )
             }
         }
         .frame(minWidth: 900, minHeight: 600)
@@ -51,6 +55,14 @@ struct ContentView: View {
         Task {
             await downloadManager.startDownload()
         }
+    }
+    
+    private func removeItem(id: UUID) {
+        downloadManager.removeItem(id: id)
+    }
+    
+    private func deleteItem(id: UUID) {
+        downloadManager.deleteItem(id: id)
     }
 }
 
@@ -183,13 +195,8 @@ struct InputSection: View {
 
 struct DownloadListSection: View {
     let items: [DownloadItem]
-    let history: [DownloadItem]
-    
-    var allItems: [DownloadItem] {
-        // Show all queue items (pending, running, completed)
-        // Plus history items at the bottom
-        return items + history.reversed()
-    }
+    let onRemove: (UUID) -> Void
+    let onDelete: (UUID) -> Void
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -203,7 +210,7 @@ struct DownloadListSection: View {
                 
                 Spacer()
                 
-                Text("\(allItems.count) items")
+                Text("\(items.count) items")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.secondary)
             }
@@ -211,13 +218,17 @@ struct DownloadListSection: View {
             
             Divider()
             
-            if allItems.isEmpty {
+            if items.isEmpty {
                 EmptyStateView()
             } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
-                        ForEach(allItems) { item in
-                            DownloadItemCard(item: item)
+                        ForEach(items) { item in
+                            DownloadItemCard(
+                                item: item,
+                                onRemove: { onRemove(item.id) },
+                                onDelete: { onDelete(item.id) }
+                            )
                         }
                     }
                     .padding(16)
@@ -252,6 +263,8 @@ struct EmptyStateView: View {
 
 struct DownloadItemCard: View {
     let item: DownloadItem
+    let onRemove: () -> Void
+    let onDelete: () -> Void
     
     var body: some View {
         VStack(spacing: 0) {
@@ -320,6 +333,17 @@ struct DownloadItemCard: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(borderColor, lineWidth: 1)
         )
+        .contextMenu {
+            Button(action: onRemove) {
+                Label("Remove from List", systemImage: "trash")
+            }
+            
+            if item.filePath != nil {
+                Button(action: onDelete) {
+                    Label("Delete File & Remove", systemImage: "trash.fill")
+                }
+            }
+        }
     }
     
     private var displayTitle: String {
