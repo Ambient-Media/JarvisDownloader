@@ -25,8 +25,13 @@ struct DownloadItem: Identifiable, Codable {
     var errorMessage: String?
     var completedDate: Date?
     var filePath: String?
+    var isPlaylist: Bool = false
+    var playlistTitle: String?
+    var totalTracks: Int?
+    var downloadedTracks: Int?
+    var albumArtworkData: Data?
     
-    init(url: URL, source: SourceType) {
+    init(url: URL, source: SourceType, isPlaylist: Bool = false) {
         self.id = UUID()
         self.url = url
         self.source = source
@@ -36,6 +41,11 @@ struct DownloadItem: Identifiable, Codable {
         self.errorMessage = nil
         self.completedDate = nil
         self.filePath = nil
+        self.isPlaylist = isPlaylist
+        self.playlistTitle = nil
+        self.totalTracks = nil
+        self.downloadedTracks = nil
+        self.albumArtworkData = nil
     }
 }
 
@@ -45,4 +55,13 @@ func detectSource(from url: URL) -> SourceType {
     if host.contains("bandcamp.com")   { return .bandcamp }
     if host.contains("youtube.com") || host.contains("youtu.be") { return .youtube }
     return .unknown
+}
+
+func isPlaylistURL(_ url: URL) -> Bool {
+    let urlString = url.absoluteString
+    // Check for common playlist patterns
+    return urlString.contains("/sets/") || // SoundCloud playlists
+           urlString.contains("?list=") || // YouTube playlists
+           urlString.contains("&list=") || // YouTube playlists
+           urlString.contains("/album/")   // Bandcamp albums
 }

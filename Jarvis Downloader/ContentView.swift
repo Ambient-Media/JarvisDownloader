@@ -3,13 +3,17 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var downloadManager = DownloadManager()
     @State private var urlInput = ""
+    @State private var showingImportAlert = false
+    @State private var importMessage = ""
+    @State private var isImporting = false
     
     var body: some View {
         VStack(spacing: 0) {
             // Header with folder path
             HeaderBar(rootFolder: downloadManager.rootFolder,
                       jarvisFolder: downloadManager.jarvisDownloadsFolder,
-                      onFolderChange: { url in downloadManager.rootFolder = url })
+                      onFolderChange: changeFolder,
+                      onImport: importFiles)
             
             Divider()
             
@@ -19,20 +23,70 @@ struct ContentView: View {
                     urlInput: $urlInput,
                     onAdd: addToQueue,
                     onStart: startDownload,
-                    isRunning: downloadManager.isRunning
+                    isRunning: downloadManager.isRunning,
+                    hasItemsInQueue: !downloadManager.items.filter { $0.status == .pending || $0.status == .running }.isEmpty
                 )
                 
                 Divider()
                 
-                // Right side: Just show queue items
+                // Middle: Active queue (pending/downloading)
                 DownloadListSection(
-                    items: downloadManager.items,
+                    title: "Queue",
+                    items: downloadManager.items.filter {
+                        $0.status == .pending || $0.status == .running
+                    },
                     onRemove: removeItem,
-                    onDelete: deleteItem
+                    onDelete: deleteItem,
+                    onClearAll: nil
+                )
+                
+                Divider()
+                
+                // Right: Library (completed/failed/skipped)
+                DownloadListSection(
+                    title: "Library",
+                    items: downloadManager.history,
+                    onRemove: removeFromHistory,
+                    onDelete: deleteFromHistory,
+                    onClearAll: clearAllHistory
                 )
             }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .alert("Import Complete", isPresented: $showingImportAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(importMessage)
+        }
+        .overlay {
+            if isImporting {
+                ZStack {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            // Prevent closing by tapping outside
+                        }
+                    
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("Importing existing files...")
+                            .font(.system(size: 14, weight: .medium))
+                        Text("This may take a while for many files")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                        
+                        Button("Cancel") {
+                            isImporting = false
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(30)
+                    .background(Color(NSColor.windowBackgroundColor))
+                    .cornerRadius(12)
+                }
+            }
+        }
     }
     
     private func addToQueue() {
@@ -44,7 +98,8 @@ struct ContentView: View {
         
         for url in urls {
             let source = detectSource(from: url)
-            let item = DownloadItem(url: url, source: source)
+            let playlist = isPlaylistURL(url)
+            let item = DownloadItem(url: url, source: source, isPlaylist: playlist)
             downloadManager.items.append(item)
         }
         
@@ -65,12 +120,45 @@ struct ContentView: View {
     private func deleteItem(id: UUID) {
         downloadManager.deleteItem(id: id)
     }
+    
+    private func changeFolder(url: URL) {
+        downloadManager.rootFolder = url
+    }
+    
+    private func removeFromHistory(id: UUID) {
+        downloadManager.removeFromHistory(id: id)
+    }
+    
+    private func deleteFromHistory(id: UUID) {
+        downloadManager.deleteFromHistory(id: id)
+    }
+    
+    private func clearAllHistory() {
+        downloadManager.clearAllHistory()
+    }
+    
+    private func importFiles() {
+        isImporting = true
+        Task {
+            let result = await downloadManager.importExistingFiles()
+            await MainActor.run {
+                isImporting = false
+                if result.imported > 0 {
+                    importMessage = "Added \(result.imported) files to your library."
+                } else {
+                    importMessage = "No new files found. All existing files are already in your library."
+                }
+                showingImportAlert = true
+            }
+        }
+    }
 }
 
 struct HeaderBar: View {
     let rootFolder: URL
     let jarvisFolder: URL
     let onFolderChange: (URL) -> Void
+    let onImport: () -> Void
     
     var body: some View {
         HStack(spacing: 12) {
@@ -83,6 +171,16 @@ struct HeaderBar: View {
                 .foregroundColor(.secondary)
             
             Spacer()
+            
+            Button(action: {
+                onImport()
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.down")
+                    Text("Import Files")
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
             
             Button(action: chooseFolder) {
                 HStack(spacing: 6) {
@@ -127,6 +225,7 @@ struct InputSection: View {
     let onAdd: () -> Void
     let onStart: () -> Void
     let isRunning: Bool
+    let hasItemsInQueue: Bool
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -166,8 +265,8 @@ struct InputSection: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(Color.blue.opacity(0.1))
-                    .foregroundColor(.blue)
+                    .background(urlInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray.opacity(0.2) : Color.blue.opacity(0.1))
+                    .foregroundColor(urlInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .secondary : .blue)
                     .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
@@ -180,12 +279,12 @@ struct InputSection: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(Color.gray.opacity(0.2))
-                    .foregroundColor(.primary)
+                    .background(hasItemsInQueue && !isRunning ? Color.orange : Color.gray.opacity(0.2))
+                    .foregroundColor(hasItemsInQueue && !isRunning ? .white : .secondary)
                     .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
-                .disabled(isRunning)
+                .disabled(isRunning || !hasItemsInQueue)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
@@ -195,9 +294,11 @@ struct InputSection: View {
 }
 
 struct DownloadListSection: View {
+    let title: String
     let items: [DownloadItem]
     let onRemove: (UUID) -> Void
     let onDelete: (UUID) -> Void
+    let onClearAll: (() -> Void)?
     
     @State private var sortOption: SortOption = .dateAdded
     
@@ -231,16 +332,50 @@ struct DownloadListSection: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Header
             HStack(spacing: 10) {
                 Image(systemName: "list.bullet.rectangle.fill")
                     .font(.system(size: 18))
                     .foregroundColor(.blue)
                 
-                Text("Downloads")
+                Text(title)
                     .font(.system(size: 16, weight: .semibold))
                 
                 Spacer()
                 
+                Text("\(items.count) items")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            
+            Divider()
+            
+            // Toolbar
+            HStack(spacing: 12) {
+                // Clear completed button (only show for Library)
+                if title == "Library", let clearAll = onClearAll {
+                    Button(action: clearAll) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11))
+                            Text("Clear All")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(items.isEmpty)
+                }
+                
+                Spacer()
+                
+                // Sort dropdown
                 Menu {
                     ForEach(SortOption.allCases, id: \.self) { option in
                         Button(action: { sortOption = option }) {
@@ -261,17 +396,15 @@ struct DownloadListSection: View {
                     }
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
                     .background(Color.gray.opacity(0.1))
                     .cornerRadius(6)
                 }
                 .menuStyle(.borderlessButton)
-                
-                Text("\(items.count) items")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
             
             Divider()
             
@@ -279,7 +412,7 @@ struct DownloadListSection: View {
                 EmptyStateView()
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 10) {
+                    LazyVStack(spacing: 8) {
                         ForEach(sortedItems) { item in
                             DownloadItemCard(
                                 item: item,
@@ -325,26 +458,26 @@ struct DownloadItemCard: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 14) {
+            HStack(spacing: 10) {
                 platformIcon
                 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(displayTitle)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
                         .foregroundColor(.primary)
                     
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         Text(item.source.rawValue)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundColor(platformColor.opacity(0.9))
                         
                         Circle()
                             .fill(Color.secondary.opacity(0.4))
                             .frame(width: 3, height: 3)
                         
-                        Text(item.status.rawValue)
-                            .font(.system(size: 11, weight: .medium))
+                        Text(statusText)
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundColor(statusColor)
                         
                         if item.status == .running && item.progress > 0 {
@@ -353,7 +486,7 @@ struct DownloadItemCard: View {
                                 .frame(width: 3, height: 3)
                             
                             Text("\(Int(item.progress * 100))%")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(.blue)
                         }
                     }
@@ -363,12 +496,12 @@ struct DownloadItemCard: View {
                 
                 statusIndicator
             }
-            .padding(14)
+            .padding(10)
             
             if item.status == .running && item.progress > 0 {
                 VStack(spacing: 0) {
                     Divider()
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 10)
                     
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
@@ -380,22 +513,32 @@ struct DownloadItemCard: View {
                                 .frame(width: geometry.size.width * item.progress)
                         }
                     }
-                    .frame(height: 4)
+                    .frame(height: 3)
                 }
             }
         }
         .background(cardBackground)
-        .cornerRadius(10)
+        .cornerRadius(8)
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 8)
                 .stroke(borderColor, lineWidth: 1)
         )
         .contextMenu {
+            if let path = item.filePath, !path.isEmpty {
+                Button(action: {
+                    NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+                }) {
+                    Label("Show in Finder", systemImage: "folder")
+                }
+                
+                Divider()
+            }
+            
             Button(action: onRemove) {
                 Label("Remove from List", systemImage: "trash")
             }
             
-            if item.filePath != nil {
+            if let path = item.filePath, !path.isEmpty {
                 Button(action: onDelete) {
                     Label("Delete File & Remove", systemImage: "trash.fill")
                 }
@@ -415,18 +558,55 @@ struct DownloadItemCard: View {
             return url.deletingPathExtension().lastPathComponent
         }
         
+        if item.isPlaylist {
+            if let title = item.playlistTitle {
+                return title
+            }
+            return "Playlist"
+        }
+        
         return item.url.absoluteString
+    }
+    
+    private var statusText: String {
+        if item.isPlaylist && item.status == .running {
+            if let downloaded = item.downloadedTracks, let total = item.totalTracks {
+                return "Downloading (\(downloaded)/\(total))"
+            }
+        }
+        return item.status.rawValue
     }
     
     private var platformIcon: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(platformColor.opacity(0.15))
-                .frame(width: 40, height: 40)
+            if let artworkData = item.albumArtworkData,
+               let nsImage = NSImage(data: artworkData) {
+                // Show album artwork
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 32, height: 32)
+                    .cornerRadius(6)
+            } else {
+                // Show platform icon fallback
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(platformColor.opacity(0.15))
+                    .frame(width: 32, height: 32)
+                
+                Image(systemName: platformSystemImage)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(platformColor)
+            }
             
-            Image(systemName: platformSystemImage)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundColor(platformColor)
+            if item.isPlaylist {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(2)
+                    .background(Color.blue)
+                    .clipShape(Circle())
+                    .offset(x: 10, y: -10)
+            }
         }
     }
     
