@@ -37,6 +37,7 @@ struct ContentView: View {
                     },
                     onRemove: removeItem,
                     onDelete: deleteItem,
+                    onRedownload: nil,  // Queue items can't be re-downloaded
                     onClearAll: nil
                 )
                 
@@ -48,6 +49,7 @@ struct ContentView: View {
                     items: downloadManager.history,
                     onRemove: removeFromHistory,
                     onDelete: deleteFromHistory,
+                    onRedownload: redownloadItem,  // Library items can be re-downloaded
                     onClearAll: clearAllHistory
                 )
             }
@@ -131,6 +133,10 @@ struct ContentView: View {
     
     private func deleteFromHistory(id: UUID) {
         downloadManager.deleteFromHistory(id: id)
+    }
+    
+    private func redownloadItem(id: UUID) {
+        downloadManager.redownloadItem(id: id)
     }
     
     private func clearAllHistory() {
@@ -298,6 +304,7 @@ struct DownloadListSection: View {
     let items: [DownloadItem]
     let onRemove: (UUID) -> Void
     let onDelete: (UUID) -> Void
+    let onRedownload: ((UUID) -> Void)?  // Optional - only for Library
     let onClearAll: (() -> Void)?
     
     @State private var sortOption: SortOption = .dateAdded
@@ -417,7 +424,8 @@ struct DownloadListSection: View {
                             DownloadItemCard(
                                 item: item,
                                 onRemove: { onRemove(item.id) },
-                                onDelete: { onDelete(item.id) }
+                                onDelete: { onDelete(item.id) },
+                                onRedownload: onRedownload != nil ? { onRedownload!(item.id) } : nil
                             )
                         }
                     }
@@ -455,6 +463,7 @@ struct DownloadItemCard: View {
     let item: DownloadItem
     let onRemove: () -> Void
     let onDelete: () -> Void
+    let onRedownload: (() -> Void)?  // Optional - only for Library items
     
     var body: some View {
         VStack(spacing: 0) {
@@ -524,6 +533,15 @@ struct DownloadItemCard: View {
                 .stroke(borderColor, lineWidth: 1)
         )
         .contextMenu {
+            // Re-download option (only for Library items)
+            if let redownload = onRedownload {
+                Button(action: redownload) {
+                    Label("Re-download", systemImage: "arrow.clockwise")
+                }
+                
+                Divider()
+            }
+            
             if let path = item.filePath, !path.isEmpty {
                 Button(action: {
                     NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")

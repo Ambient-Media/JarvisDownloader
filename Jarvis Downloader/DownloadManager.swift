@@ -3,6 +3,8 @@ import Combine
 import AppKit
 import AVFoundation
 
+// v1.0.1 - Fixed YouTube 403 errors by adding Android player client extractor argument
+
 final class DownloadManager: ObservableObject {
     @Published var items: [DownloadItem] = []
     @Published var history: [DownloadItem] = []
@@ -137,7 +139,8 @@ final class DownloadManager: ObservableObject {
             "--newline",
             "--progress",
             "--download-archive", downloadArchivePath.path,
-            "--no-overwrites"
+            "--no-overwrites",
+            "--extractor-args", "youtube:player_client=android"  // v1.0.1: Fix for YouTube 403 errors
         ]
         
         // If it's a playlist, add playlist-specific options
@@ -280,7 +283,10 @@ final class DownloadManager: ObservableObject {
                 let errorString = String(data: errorData, encoding: .utf8) ?? ""
                 
                 // Check if everything was already downloaded
-                let allSkipped = (downloadedTracks == 0 && skippedTracks > 0) ||
+                let outputHasSkipMessage = outputString.contains("has already been downloaded") ||
+                                          outputString.contains("has already been recorded in the archive")
+                let allSkipped = outputHasSkipMessage ||
+                                (downloadedTracks == 0 && skippedTracks > 0) ||
                                 (item.isPlaylist && totalTracks > 0 && skippedTracks == totalTracks)
                 let isSuccess = process.terminationStatus == 0
                 
@@ -427,6 +433,30 @@ final class DownloadManager: ObservableObject {
     func clearAllHistory() {
         DispatchQueue.main.async {
             self.history.removeAll()
+            self.saveHistory()
+        }
+    }
+    
+    // Re-download item: move from history back to queue
+    func redownloadItem(id: UUID) {
+        DispatchQueue.main.async {
+            guard let item = self.history.first(where: { $0.id == id }) else { return }
+            
+            // Create a new item with pending status
+            var newItem = DownloadItem(url: item.url, source: item.source, isPlaylist: item.isPlaylist)
+            newItem.fileName = nil  // Will be set when downloaded
+            newItem.status = .pending
+            newItem.progress = 0.0
+            newItem.filePath = nil
+            newItem.completedDate = nil
+            newItem.errorMessage = nil
+            
+            // Add to queue
+            self.items.append(newItem)
+            self.saveQueue()
+            
+            // Optionally remove from history
+            self.history.removeAll { $0.id == id }
             self.saveHistory()
         }
     }
